@@ -72,6 +72,7 @@ def pcp_integral(x, y, T):
 
 
 TOL = 1e-10
+BLEND = 0.1
 
 
 def _limit(d, s1, s2):
@@ -95,12 +96,14 @@ def node_slopes(x, y):
     d[n] = _limit(((2 * h[n - 1] + h[n - 2]) * s[n - 1] - h[n - 1] * s[n - 2]) / (h[n - 1] + h[n - 2]), s[n - 1], s[n - 1])
     proposals = {}
     for i in range(n - 1):
-        if abs(s[i] - s[i + 1]) <= TOL * max(abs(s[i]), abs(s[i + 1])):
-            for node in (i, i + 1, i + 2):
-                proposals.setdefault(node, []).append(s[i])
-    for node, chords in proposals.items():
-        if max(chords) - min(chords) <= TOL * max(abs(chords[0]), 1e-300):
-            d[node] = _limit(chords[0], s[max(node - 1, 0)], s[min(node, n - 1)])
+        gap = abs(s[i] - s[i + 1]) / max(abs(s[i]), abs(s[i + 1]), 1e-300)
+        weight = 1.0 if gap <= TOL else max(0.0, 1.0 - gap / BLEND)
+        if weight > 0.0:
+            for node, chord in ((i, s[i]), (i + 1, (s[i] + s[i + 1]) / 2), (i + 2, s[i + 1])):
+                proposals.setdefault(node, []).append((weight, chord))
+    for node, items in proposals.items():
+        weight, chord = max(items, key=lambda item: item[0])
+        d[node] = _limit((1 - weight) * d[node] + weight * chord, s[max(node - 1, 0)], s[min(node, n - 1)])
     return s, d
 
 
@@ -114,13 +117,11 @@ def derivative_breakpoints(x, y):
         scale = TOL * (abs(s[i]) + abs(d[i]) + abs(d[i + 1]))
         a = 0.0 if abs(a) <= scale else a
         b = 0.0 if abs(b) <= scale else b
-        if a == 0.0 and b == 0.0:
-            seg = [(x0, d[i]), (x1, d[i + 1])]
-        elif a == 0.0 or b == 0.0:
+        if a == 0.0 or b == 0.0:
             seg = [(x0, s[i]), (x1, s[i])]
         elif a * b > 0:
             if abs(abs(a) - abs(b)) <= scale:
-                seg = [(x0, d[i]), (x1, d[i + 1])]
+                seg = [(x0, d[i]), (x1, 2 * s[i] - d[i])]
             elif abs(b) < abs(a):
                 knot = x0 + 2 * h * abs(b) / (abs(a) + abs(b))
                 seg = [(x0, d[i]), (knot, d[i + 1]), (x1, d[i + 1])]

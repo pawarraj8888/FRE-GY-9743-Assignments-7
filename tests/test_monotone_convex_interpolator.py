@@ -248,10 +248,34 @@ def test_tie_broken_only_by_rounding_counts_as_a_tie():
 
 def test_curve_depends_continuously_on_the_data_around_a_tie():
     base = curve([0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 4.0])
-    grid = np.linspace(0.0, 2.0, 201)
-    for eps in (1e-6, -1e-6, 1e-4, -1e-4):
+    grid = np.linspace(0.0, 3.0, 301)                     # the run and the interval beyond it
+    for eps in (1e-9, -1e-9, 1e-6, -1e-6, 1e-4, -1e-4, 1e-2, -1e-2):
         moved = curve([0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0 + eps, 4.0])
         assert max(abs(moved.interpolate(t) - base.interpolate(t)) for t in grid) <= 2.0 * abs(eps)
+
+
+def test_nearly_equal_chords_blend_the_run_end_slope():
+    x = np.array([0.0, 1.0, 2.0, 3.0])
+    plain = Interpolator1DMonotoneConvex._node_slopes(x, np.array([0.0, 1.0, 2.3, 4.3]))   # chords 1, 1.3, 2: no blend
+    assert abs(plain[2] - 6.0 / (3.0 / 1.3 + 3.0 / 2.0)) < 1e-15                              # plain harmonic mean (equal spacing)
+    half = Interpolator1DMonotoneConvex._node_slopes(x, np.array([0.0, 1.0, 2.05, 4.05]))    # chords 1, 1.05, 2: gap 0.048
+    weight = 1.0 - (0.05 / 1.05) / Interpolator1DMonotoneConvex.BLEND_TOLERANCE
+    harmonic = 6.0 / (3.0 / 1.05 + 3.0 / 2.0)
+    assert abs(half[2] - ((1.0 - weight) * harmonic + weight * 1.05)) < 1e-12
+    assert 1.05 < half[2] < harmonic                        # between the run's chord and the default
+
+
+def test_bump_sensitivity_has_a_finite_limit_on_round_quote_data():
+    # the first three chords are exactly 0.2% per year, so a bump of node 1 makes and breaks a tie
+    sofr = [0.025, 0.026003, 0.027499, 0.028512, 0.033, 0.047]
+    base = notebook_model("MONOTONE_CONVEX", sofr=sofr)
+    df0 = qfDiscountFactor(base, "SOFR-1B", "2028-07-03")
+    per_unit = []
+    for bump in (1e-6, 1e-7, 1e-8):
+        bumped = notebook_model("MONOTONE_CONVEX", sofr=sofr)
+        bumped.perturb_model_parameter("SOFR-1B", 1, bump)
+        per_unit.append((qfDiscountFactor(bumped, "SOFR-1B", "2028-07-03") - df0) / bump)
+    assert max(per_unit) / min(per_unit) < 1.01 and all(v < 0 for v in per_unit)
 
 
 def test_two_collinear_runs_meet_in_a_single_kink():
@@ -382,9 +406,9 @@ def test_hand_calculation_of_a_three_node_curve():
 
 
 # ---- the curve inside the library -------------------------------------------------------------
-def notebook_model(method):
+def notebook_model(method, sofr=SOFR):
     node_dates = NODE_DATES
-    sofr_quotes = pd.DataFrame({"values": SOFR}, index=node_dates)
+    sofr_quotes = pd.DataFrame({"values": sofr}, index=node_dates)
     ff_quotes = pd.DataFrame({"values": FF}, index=node_dates)
     funding_quotes = pd.DataFrame({"values": [0.0005]}, index=["2027-01-04"])
     data_collection = qfCreateDataCollection([

@@ -106,7 +106,8 @@ through the points, has a continuous derivative, and is monotone and convex on e
 <p>The inputs are IFR <i>values</i> at the nodes, so the free quantities are the node slopes. An interior node gets the weighted harmonic mean of the two neighbouring
 chord slopes (zero at a local extremum or next to a flat interval, never more than twice the smaller chord); the two end nodes get the slope of the parabola through the
 three outermost points, limited the same way; and where two consecutive chords are equal (within a relative tolerance) the node between them and the two end nodes of that
-collinear run take the common chord, so collinear points are reproduced by their straight line. On each interval the derivative is piecewise linear through the left slope,
+collinear run take the common chord, so collinear points are reproduced by their straight line, and chords within a tenth of each other blend toward that rule so the curve
+depends continuously on the data. On each interval the derivative is piecewise linear through the left slope,
 a knot slope and the right slope, and the curve is two quadratics joined with a continuous derivative. When the end slopes straddle the chord (the data are strictly convex
 there) the knot is placed where one piece becomes a straight line, so the derivative runs monotonically from one end slope to the other: the piece is convex (or concave for
 concave data) and, since every slope has the chord's sign, monotone. When both slopes sit on the same side of the chord no convex C<sup>1</sup> piece exists; the knot moves
@@ -133,7 +134,8 @@ so the gap, and the PV, shrink.</p>
 <h2>Checks</h2>
 <p class="note">{n_tests} tests in <code>tests/test_monotone_convex_interpolator.py</code>: one-node and two-node curves, interpolation through the points, continuity and a continuous
 derivative, the slope rules and caps, shape on rising, falling, concave, hump and bowl data, the weighted-knot case, collinear runs (exact and tied only up to rounding, two runs
-meeting in a kink, a run ending at a maximum, a capped run end), continuity in the data around a tie, random no-overshoot data, integrals against Simpson quadrature, flat
+meeting in a kink, a run ending at a maximum, a capped run end), continuity of the curve in the data around a tie and the blended slope for nearly equal chords, a finite
+bump-and-reprice limit on round quotes, random no-overshoot data, integrals against Simpson quadrature, flat
 extrapolation, negative rates, a three-node hand calculation, model discount factors, the locality of a bump, and the six notebook PVs (the PCP values equal the professor's
 printed numbers). <code>tests/test_hand_present_values.py</code> ({n_hand} tests) re-derives the six PVs in plain Python from a second implementation of the recipe with
 hand-written schedules and checks them against the notebook and the library.</p>

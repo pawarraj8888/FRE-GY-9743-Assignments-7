@@ -148,10 +148,14 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
        slope of the parabola through the three outermost points, limited the
        same way.  Where two consecutive chords are equal (a collinear run, tested
        with a relative tolerance so a tie broken only by rounding still counts)
-       the node between them and the two end nodes of the run take the common
+       the node between them and the two end nodes of the run take the run's
        chord as slope, under the same sign rule and cap, so the run is
-       reproduced by its straight line.  So a node slope always has the sign of
-       the chords around it and is at most twice the smaller of them.
+       reproduced by its straight line.  Chords that are nearly equal (within a
+       tenth of each other) blend those slopes linearly between the default and
+       the chord as the gap closes, so the curve depends continuously on the
+       data; a node claimed by two runs follows the closer tie.  So a node slope
+       always has the sign of the chords around it and is at most twice the
+       smaller of them.
     2. Interval pieces.  On each interval the derivative is piecewise linear
        through (left slope, knot slope, right slope).  When the two end slopes
        straddle the chord slope the knot is placed so that one piece is linear
@@ -171,6 +175,7 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
     """
 
     TIE_TOLERANCE = 1e-10      # relative: chords (and end slopes against the chord) this close count as equal
+    BLEND_TOLERANCE = 0.1      # relative: chords closer than this are nearly collinear and blend toward the run rule
 
     def __init__(self, axis1: np.ndarray, values: np.ndarray,
                  extrapolation_method: ExtrapMethod) -> None:
@@ -210,16 +215,20 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
         d[0] = cls._end_slope(h[0], h[1], s[0], s[1])
         d[n] = cls._end_slope(h[n - 1], h[n - 2], s[n - 1], s[n - 2])
         # Collinear runs: the node inside a tie and the two end nodes of the run take the run's
-        # chord.  A node asked for two different chords (two runs meeting) keeps its default slope.
+        # chord, with full weight for an exact tie and a weight that fades linearly to zero as the
+        # relative gap between the two chords grows to BLEND_TOLERANCE.  A node claimed by two
+        # runs follows the one with the larger weight (the first on a tie).
         proposals = {}
         for i in range(n - 1):
-            if abs(s[i] - s[i + 1]) <= cls.TIE_TOLERANCE * max(abs(s[i]), abs(s[i + 1])):
-                for node in (i, i + 1, i + 2):
-                    proposals.setdefault(node, []).append(s[i])
-        for node, chords in proposals.items():
-            if max(chords) - min(chords) <= cls.TIE_TOLERANCE * max(abs(chords[0]), 1e-300):
-                left, right = s[max(node - 1, 0)], s[min(node, n - 1)]
-                d[node] = cls._limit(chords[0], left, right)
+            gap = abs(s[i] - s[i + 1]) / max(abs(s[i]), abs(s[i + 1]), 1e-300)
+            weight = 1.0 if gap <= cls.TIE_TOLERANCE else max(0.0, 1.0 - gap / cls.BLEND_TOLERANCE)
+            if weight > 0.0:
+                for node, chord in ((i, s[i]), (i + 1, 0.5 * (s[i] + s[i + 1])), (i + 2, s[i + 1])):
+                    proposals.setdefault(node, []).append((weight, chord))
+        for node, items in proposals.items():
+            weight, chord = max(items, key=lambda item: item[0])
+            left, right = s[max(node - 1, 0)], s[min(node, n - 1)]
+            d[node] = cls._limit((1.0 - weight) * d[node] + weight * chord, left, right)
         return d
 
     @classmethod
@@ -241,13 +250,13 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
         scale = cls.TIE_TOLERANCE * (abs(s) + abs(d0) + abs(d1))
         a = 0.0 if abs(a) <= scale else a
         b = 0.0 if abs(b) <= scale else b
-        if a == 0.0 and b == 0.0:
-            return [(h, d0, d1)]
+        if a == 0.0 and b == 0.0:                   # both end slopes on the chord: the chord itself
+            return [(h, s, s)]
         if a == 0.0 or b == 0.0:                    # one end slope on the chord: the chord itself, with a
             return [(h, s, s)]                      # kink at the other node (no convex C1 piece exists)
         if a * b > 0.0:                             # slopes straddle the chord: one linear piece
             if abs(abs(a) - abs(b)) <= scale:
-                return [(h, d0, d1)]
+                return [(h, d0, 2.0 * s - d0)]      # a single quadratic that lands exactly on the node
             if abs(b) < abs(a):
                 alpha = 2.0 * h * abs(b) / (abs(a) + abs(b))
                 return [(alpha, d0, d1), (h - alpha, d1, d1)]

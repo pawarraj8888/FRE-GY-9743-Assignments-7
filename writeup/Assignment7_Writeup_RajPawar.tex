@@ -42,10 +42,12 @@ $t_n$, set to zero when its sign disagrees with the end chord and capped at twic
 when two consecutive chords are equal (I test equality with a relative tolerance of $10^{-10}$, so a tie broken only by rounding still
 counts), the node between them and the two end nodes of that run take the common chord as their slope, under the same sign rule and cap.
 A run of three or more collinear points is then reproduced by the line through them and all the curvature goes to the neighbouring
-intervals; a node that two different runs claim keeps its default slope. Three facts hold for every slope: (P1) $d_i$ is zero or has
-the sign of the chords on both sides of its node; (P2) an interior $d_i$ lies between $s_i$ and $s_{i+1}$, because a weighted harmonic
-mean of two numbers of one sign does, and strictly between them when they differ; (P3) $|d_i|\le 2\min(|s_i|,|s_{i+1}|)$,
-$|d_0|\le 2|s_1|$ and $|d_n|\le 2|s_n|$. At the ends the parabola gives $d_0-s_1=h_1(s_1-s_2)/(h_1+h_2)$ and
+intervals. Chords that are nearly equal, within a tenth of each other, blend: as the relative gap closes from $0.1$ to $0$ those
+slopes move linearly from the default rule to the run rule, so the curve depends continuously on the data and a small bump of a round
+quote cannot flip the shape next to it; a node claimed by two runs follows the closer tie. Three facts hold for every slope: (P1) $d_i$
+is zero or has the sign of the chords on both sides of its node; (P2) an interior $d_i$ lies in the closed interval between $s_i$ and
+$s_{i+1}$: the harmonic mean puts it strictly inside when the chords differ, and the run rule puts it on the run's chord, one end of
+that interval; (P3) $|d_i|\le 2\min(|s_i|,|s_{i+1}|)$, $|d_0|\le 2|s_1|$ and $|d_n|\le 2|s_n|$. At the ends the parabola gives $d_0-s_1=h_1(s_1-s_2)/(h_1+h_2)$ and
 $d_n-s_n=h_n(s_n-s_{n-1})/(h_n+h_{n-1})$, and the limiter only zeroes a slope or shrinks it toward the chord, so for convex data
 $d_0<s_1$ and $d_n>s_n$ as well. With two nodes both slopes equal the chord and the curve is the straight line; with one node it is
 the constant.
@@ -65,7 +67,7 @@ West's flat segment.
 moves monotonically from $d_{i-1}$ to $d_i$ cannot average to $s_i$. I put the knot at the fraction $w=|b|/(|a|+|b|)$ of the interval,
 so it moves toward the end whose slope is closer to the chord and sits at the midpoint when the two deviations are equal, with
 $m=2s_i-w\,d_{i-1}-(1-w)\,d_i$. By (P3) $|d_{i-1}|,|d_i|\le 2|s_i|$, so $m$ has the sign of $s_i$ or is zero, and the piece is monotone,
-with one inflection. The weight makes the piece change continuously into the straddling case as $a$ or $b$ passes through zero.
+with one inflection. The weight makes the values of the piece change continuously into the straddling case as $a$ or $b$ passes through zero.
 \item $a=b=0$: the straight line.
 \item exactly one of $a,b$ zero: one end slope lies on the chord. With the tie rule this only happens where a collinear run meets
 data it cannot bend into smoothly: a local extremum, a second run with a different chord, or a neighbour whose slope the cap holds
@@ -77,30 +79,31 @@ The implementation stores the breakpoints, the three coefficients of every quadr
 outside $[t_0,t_n]$ the curve is flat at $f_0$ and $f_n$.
 
 \textbf{Which data are compatible, and what happens otherwise.} If the chord slopes increase strictly across an interval,
-$s_{i-1}<s_i<s_{i+1}$, then by (P2) $d_{i-1}<s_i<d_i$ (at the ends, by the parabola remark above), so $a,b>0$ and the piece is monotone
-and convex; strictly decreasing chords give a monotone concave piece. Both supplied curves are of this kind: the SOFR chords rise from
+$s_{i-1}<s_i<s_{i+1}$, then $d_{i-1}<s_i<d_i$: by (P2) for the harmonic mean, because a run's chord lies strictly on the convex side of
+the neighbouring chord for the run rule and its blends, and by the parabola remark at the ends; so $a,b>0$ and the piece is monotone
+and convex. Strictly decreasing chords give a monotone concave piece. Both supplied curves are of this kind: the SOFR chords rise from
 0.20\% to 0.60\% per year and the Fed Funds chords from 0.14\% to 0.50\%, so every interval is monotone and convex,
 which the notebook confirms by checking first and second differences on a 2001-point grid in each of the five intervals of both curves.
 Equal consecutive chords are the boundary case: the tie rule makes the run the straight line, and the interval beside it is convex
 because the run's chord lies strictly on the convex side of the neighbouring chord. Data can be incompatible in three ways. At a local
 extremum the slope at that node is zero, so the peak or trough sits at the node and nothing overshoots; the adjacent pieces are concave
 (a hump) or convex (a bowl) when the data approach the extremum concavely or convexly, and a piece whose data accelerate into the peak
-carries an inflection instead. At a node where the data turn from convex to concave one of the neighbouring pieces also carries an
-inflection. And where a collinear run meets an extremum, a second run or a capped neighbour, the run stays straight and the curve has
+carries an inflection instead. Where the chord sequence has a local extremum (the data turn from convex to concave or back) the interval with that chord carries an inflection. And where a collinear run meets an extremum, a second run or a capped neighbour, the run stays straight and the curve has
 a kink at that node, since no smooth convex piece can leave a chord. So continuity and monotonicity hold for any data, the derivative
 is continuous except at those kinks, and convexity holds on every interval whose chords increase strictly across it and on every
-collinear run. The tolerance turns ties broken by rounding into ties; data that almost tie but genuinely bend get the generic rule,
-so at a relative chord difference of $10^{-10}$ the slope at a run's end switches from the run's chord to the harmonic mean. That seam
-is the price of reproducing collinear data exactly, and it lies far below anything market data can produce. Positivity is inherited
+collinear run. Exact ties come up all the time (round quotes at regular nodes), which is why the run rule blends rather than switches: a one basis
+point bump of such a node moves the curve beside the run by an amount proportional to the bump, and the bump-and-reprice sensitivity
+has a finite limit, which a test checks on quotes with three equal 20 bp chords. Positivity is inherited
 from the data, since the curve never leaves the range of its two endpoint values. Flat extrapolation beyond $t_n$ meets a rising
-convex last piece with a kink (the slope drops to zero), the counterpart of the jump that PCP has there; a zero end slope in the
+convex last piece with a kink (the slope drops to zero), the counterpart of the jumps PCP has at the nodes; a zero end slope in the
 Hagan and West manner would remove that kink but would cost the last piece its convexity, since the derivative would have to turn
 over to reach zero, which the brief rules out.
 
 \textbf{Locality and stability.} A node value enters only its own slope and the slopes of its two neighbours, so a change at $f_i$ moves
-the curve on at most the four intervals between $t_{i-2}$ and $t_{i+2}$ (five when it makes or breaks a tie at a neighbouring node):
-one more than the unameliorated Hagan and West curve, where an input moves three intervals, and one fewer than their ameliorated one.
-The extra interval is the price of moving the construction one derivative up, since a node value enters two chords. The harmonic mean
+the curve on at most the four intervals between $t_{i-2}$ and $t_{i+2}$: one more than the unameliorated Hagan and West curve, where an
+input moves three intervals, and one fewer than their ameliorated one. The extra interval is the price of moving the construction one
+derivative up, since a node value enters two chords. Through the run rule a value also reaches the slope two nodes away when it makes
+or changes a near-tie there, so with nearly collinear data on both sides the footprint can grow to six intervals. The harmonic mean
 and the cap keep every slope within twice the smaller adjacent chord, so a short steep interval cannot drag the curve next to it; this
 is the role their positivity collar $f_i\le 2\min(f^d_i,f^d_{i+1})$ plays.
 
@@ -129,17 +132,18 @@ SOFR rates fall from 2.699\%, 3.077\%, 3.809\% to 2.601\%, 2.902\%, 3.370\%. The
 straight to the 5Y value of 4.7\% while my curve is still between 3.5 and 3.65\% (it averages 3.57\% over the final quarter), so the floating
 leg falls from 90,552.57 to 84,240.04 while the fixed leg rises from 96,775.08 to 97,114.75 through the discount factors.
 \emph{Basis swap:} I receive SOFR plus 10 bp and pay Fed Funds, so what matters is the SOFR--FF gap. PCP's gap over the seven regular
-quarters is the right-node gap, 27.8, 27.8, 28.1, 34.8, 34.8, 44.6, 44.6 bp; my curves pass through the point gaps (20, 23, 28, 35, 45, 65 bp at the six nodes) and
+quarters is essentially the right-node gap, 27.8, 27.8, 28.1, 34.8, 34.8, 44.6, 44.6 bp; my curves pass through the point gaps (20, 23, 28, 35, 45, 65 bp at the six nodes) and
 give 23.6, 25.1, 26.8, 29.4, 33.0, 36.2, 38.8 bp over the same quarters, so the leg difference shrinks from 8,351.35 to 7,631.94 even though both legs fall, by
 3,073.84 and 2,354.43 (59,485.39 and 51,134.04 become 56,411.56 and 48,779.61).
 
 \section*{4. Checks and notes}
-\textbf{Tests.} \code{tests/test\_monotone\_convex\_interpolator.py} has 32 tests: the one-node and two-node curves, interpolation
+\textbf{Tests.} \code{tests/test\_monotone\_convex\_interpolator.py} has 34 tests: the one-node and two-node curves, interpolation
 through the points, continuity and a continuous derivative at every breakpoint, the slope rules (sign, bounds, zero at an extremum, the
 interior and end caps, the end sign rule), monotone and convex pieces on rising, falling, concave, hump and bowl data with the curvature
 of the pieces beside an extremum, the weighted-knot case with its inflection, collinear runs (an exact run with a bend, a run tied only
-up to rounding, continuity of the curve in the data around a tie, two runs meeting in one kink, a run ending at a maximum, a steep run
-whose end slope the cap holds down), 50 random data sets that never overshoot, \code{integrate} against Simpson quadrature of
+up to rounding, continuity of the whole curve in the data as a tie is made or broken, the blended slope for nearly equal chords, two
+runs meeting in one kink, a run ending at a maximum, a steep run whose end slope the cap holds down), 50 random data sets that never
+overshoot, a finite bump-and-reprice limit on round quotes, \code{integrate} against Simpson quadrature of
 \code{interpolate}, additivity and sign, flat extrapolation, negative rates, a three-node curve worked out by hand (slopes $7/6$, $9/13$,
 $1/6$, knot positions, interior values and integrals), the model's discount factors, a 1 bp bump of one node that leaves the far
 interval untouched, duplicate node times rejected, and the six notebook PVs. \code{tests/test\_hand\_present\_values.py} (3
