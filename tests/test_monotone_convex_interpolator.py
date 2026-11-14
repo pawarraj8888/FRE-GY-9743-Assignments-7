@@ -52,6 +52,14 @@ def assert_close(a, b, tol=1e-12):
     assert abs(a - b) <= tol, (a, b, a - b)
 
 
+def derivative_jump(it, p, eps=1e-6):
+    """f'(p+) - f'(p-) from second-order one-sided differences (bias O(eps^2), so ~1e-12 on these curves)."""
+    f = it.interpolate
+    left = (3.0 * f(p) - 4.0 * f(p - eps) + f(p - 2.0 * eps)) / (2.0 * eps)
+    right = (-3.0 * f(p) + 4.0 * f(p + eps) - f(p + 2.0 * eps)) / (2.0 * eps)
+    return right - left
+
+
 # ---- basic contract ----------------------------------------------------------------------------
 def test_one_node_curve_is_constant_everywhere():
     it = curve([1.0054794521], [0.0005])
@@ -106,9 +114,7 @@ def test_curve_is_continuous_and_has_a_continuous_derivative():
         for p in list(it.breaks_) + [TIMES[0] - 0.3, TIMES[-1] + 0.3]:
             assert abs(it.interpolate(p + eps) - it.interpolate(p - eps)) < 1e-8
         for p in it.breaks_[1:-1]:                      # interior breakpoints: nodes and knots
-            left = (it.interpolate(p) - it.interpolate(p - eps)) / eps
-            right = (it.interpolate(p + eps) - it.interpolate(p)) / eps
-            assert abs(left - right) < 1e-5, (p, left, right)
+            assert abs(derivative_jump(it, p)) < 1e-8, p
 
 
 def test_node_slopes_follow_the_chords_and_stay_capped():
@@ -128,6 +134,17 @@ def test_node_slopes_follow_the_chords_and_stay_capped():
     w1, w2 = 2.0 * 2.0 + 0.1, 2.0 + 2.0 * 0.1
     assert (w1 + w2) / (w1 / s[0] + w2 / s[1]) > 2.0 * s[1]
     assert d[1] == 2.0 * s[1] and d[2] == 2.0 * s[1]
+
+
+def test_end_slopes_follow_the_sign_rule_and_the_cap():
+    slopes = Interpolator1DMonotoneConvex._node_slopes
+    # parabola through (0,0), (1,0.01), (2,0.05) has slope -0.005 at 0: wrong sign against the chord 0.01 -> zero
+    assert slopes(np.array([0.0, 1.0, 2.0]), np.array([0.0, 0.01, 0.05]))[0] == 0.0
+    # parabola through (0,0), (1,0.01), (2,-0.05) has slope 0.045 at 0: capped at twice the end chord
+    assert slopes(np.array([0.0, 1.0, 2.0]), np.array([0.0, 0.01, -0.05]))[0] == 0.02
+    # mirror images at the last node
+    assert slopes(np.array([0.0, 1.0, 2.0]), np.array([0.05, 0.01, 0.0]))[-1] == 0.0
+    assert slopes(np.array([0.0, 1.0, 2.0]), np.array([-0.05, 0.01, 0.0]))[-1] == -0.02
 
 
 # ---- shape within node intervals ---------------------------------------------------------------
@@ -168,11 +185,14 @@ def test_local_maximum_and_minimum_stay_at_the_nodes_without_overshoot():
     assert v.max() == 0.04 and grid[v.argmax()] == 2.0 and v.min() == 0.01
     shapes = shape_per_interval(hump, x)
     assert shapes[0][0] and shapes[1][0] and shapes[2][1] and shapes[3][1]
+    assert shapes[1][3] and shapes[2][3]                  # the data approach the peak concavely: concave pieces
     bowl = curve(x, [0.04, 0.02, 0.01, 0.02, 0.04])
     grid, v = sample(bowl, 0.0, 4.0)
     assert v.min() == 0.01 and grid[v.argmin()] == 2.0 and v.max() == 0.04
-    eps = 1e-7                                            # zero slope at the extremum node
-    assert abs(hump.interpolate(2.0 + eps) - hump.interpolate(2.0 - eps)) < 1e-12
+    shapes = shape_per_interval(bowl, x)
+    assert shapes[1][2] and shapes[2][2]                  # convex approach: convex pieces
+    assert abs(derivative_jump(hump, 2.0)) < 1e-8          # smooth over the peak, with zero slope there
+    assert abs((hump.interpolate(2.0 + 1e-6) - hump.interpolate(2.0 - 1e-6)) / 2e-6) < 1e-8
 
 
 def test_flat_interval_is_constant_and_neighbours_land_flat():
@@ -183,19 +203,114 @@ def test_flat_interval_is_constant_and_neighbours_land_flat():
     assert abs(it.interpolate(1.0 - eps) - 0.03) < 1e-12 and abs(it.interpolate(2.0 + eps) - 0.03) < 1e-12
 
 
-def test_slopes_on_the_same_side_of_the_chord_use_a_midpoint_knot_and_stay_monotone():
-    x = np.array([0.0, 0.1, 2.1, 2.2])
-    y = np.array([0.0, 0.01, 0.012, 0.022])              # steep, flat, steep: both slopes above the middle chord
+def test_slopes_on_the_same_side_of_the_chord_use_the_weighted_knot_and_stay_monotone():
+    x = np.array([0.0, 1.0, 2.0, 3.0])
+    y = np.array([0.0, 1.0, 1.9, 3.9])                    # chords 1, 0.9, 2: a slight concave bend, then a convex one
     it = curve(x, y)
     d = Interpolator1DMonotoneConvex._node_slopes(x, y)
     s = np.diff(y) / np.diff(x)
-    assert d[1] > s[1] and d[2] > s[1]
-    assert any(abs(b - 1.1) < 1e-12 for b in it.breaks_)   # knot at the midpoint of [0.1, 2.1]
+    a, b = s[1] - d[1], d[2] - s[1]
+    assert a < 0 < b                                      # both end slopes above the middle chord
+    weight = abs(b) / (abs(a) + abs(b))
+    assert any(abs(brk - (1.0 + weight)) < 1e-12 for brk in it.breaks_)
+    knot_slope = 2.0 * s[1] - weight * d[1] - (1.0 - weight) * d[2]
+    eps = 1e-7
+    assert abs((it.interpolate(1.0 + weight + eps) - it.interpolate(1.0 + weight - eps)) / (2 * eps) - knot_slope) < 1e-7
     inc, dec, cvx, ccv = shape_per_interval(it, x)[1]
-    assert inc and not cvx and not ccv                    # monotone with an inflection
+    assert inc and not cvx and not ccv                    # monotone with one inflection
+    assert_close(it.interpolate(2.0), 1.9, 1e-15)
 
 
-def test_random_monotone_data_never_overshoot_and_stay_continuous():
+def test_collinear_run_is_reproduced_by_its_line_and_the_bend_stays_convex():
+    x, y = np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 1.0, 2.0, 4.0])
+    it = curve(x, y)
+    assert np.allclose(Interpolator1DMonotoneConvex._node_slopes(x, y), [1.0, 1.0, 1.0, 2.5])
+    for t in (0.25, 0.5, 1.5, 1.9):
+        assert_close(it.interpolate(t), t, 1e-15)        # the run is the straight line
+    assert not [brk for brk in it.breaks_ if 0.0 < brk < 2.0 and brk != 1.0]   # no knot inside the run
+    assert shape_per_interval(it, x) == [(True, False, True, True), (True, False, True, True), (True, False, True, False)]
+    for node in (1.0, 2.0):                               # smooth at both nodes, including the end of the run
+        assert abs(derivative_jump(it, node)) < 1e-8
+
+
+def test_tie_broken_only_by_rounding_counts_as_a_tie():
+    x, y = np.array([1.0, 2.0, 3.0, 4.0, 5.0]), np.array([0.01, 0.0125, 0.015, 0.0175, 0.0215])
+    chords = np.diff(y) / np.diff(x)
+    assert chords[0] != chords[1] or chords[1] != chords[2]   # equal in decimal, not in binary
+    it = curve(x, y)
+    assert np.allclose(Interpolator1DMonotoneConvex._node_slopes(x, y)[:4], 0.0025)
+    for t in (1.5, 2.5, 3.5):
+        assert_close(it.interpolate(t), 0.01 + 0.0025 * (t - 1.0), 1e-15)
+    for node in (2.0, 3.0, 4.0):
+        assert abs(derivative_jump(it, node)) < 1e-8
+    assert shape_per_interval(it, x)[3][2]                # the bend after the run is convex
+
+
+def test_curve_depends_continuously_on_the_data_around_a_tie():
+    base = curve([0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 4.0])
+    grid = np.linspace(0.0, 2.0, 201)
+    for eps in (1e-6, -1e-6, 1e-4, -1e-4):
+        moved = curve([0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0 + eps, 4.0])
+        assert max(abs(moved.interpolate(t) - base.interpolate(t)) for t in grid) <= 2.0 * abs(eps)
+
+
+def test_two_collinear_runs_meet_in_a_single_kink():
+    x, y = np.array([0.0, 1.0, 2.0, 3.0, 4.0]), np.array([0.0, 1.0, 2.0, 4.0, 6.0])
+    it = curve(x, y)                                      # the only convex interpolant is piecewise linear
+    for t, v in ((0.5, 0.5), (1.5, 1.5), (2.5, 3.0), (3.5, 5.0)):
+        assert_close(it.interpolate(t), v, 1e-15)
+    jumps = [derivative_jump(it, n) for n in (1.0, 2.0, 3.0)]
+    assert abs(jumps[0]) < 1e-8 and abs(jumps[2]) < 1e-8 and abs(jumps[1] - 1.0) < 1e-8
+    assert all(cvx for _, _, cvx, _ in shape_per_interval(it, x))
+
+
+def test_run_ending_at_a_maximum_stays_straight_up_to_the_peak():
+    x, y = np.array([0.0, 1.0, 2.0, 3.0]), np.array([0.0, 0.01, 0.02, 0.015])
+    it = curve(x, y)
+    assert Interpolator1DMonotoneConvex._node_slopes(x, y)[2] == 0.0
+    assert_close(it.interpolate(1.5), 0.015, 1e-15)      # the run is the line; the peak is at the node
+    shapes = shape_per_interval(it, x)
+    assert shapes[0][2] and shapes[1][2] and shapes[2][1] and shapes[2][3]
+    assert abs(derivative_jump(it, 2.0) - (0.0 - 0.01)) < 1e-8   # the kink at the peak: slope 0.01 then 0
+    _, v = sample(it, 0.0, 3.0)
+    assert v.max() <= 0.02 and it.interpolate(2.0) == 0.02
+
+
+def test_steep_run_after_a_gentle_interval_keeps_the_cap_and_kinks_once():
+    x, y = np.array([0.0, 1.0, 2.0, 3.0, 4.0]), np.array([0.0, 0.01, 0.011, 0.021, 0.031])
+    d = Interpolator1DMonotoneConvex._node_slopes(x, y)
+    s = np.diff(y) / np.diff(x)
+    assert d[2] == 2.0 * s[1] and abs(d[3] - s[2]) < 1e-15 and abs(d[4] - s[3]) < 1e-15   # the cap holds the run's end slope down
+    it = curve(x, y)
+    for t in (2.5, 3.5):
+        assert_close(it.interpolate(t), 0.011 + 0.01 * (t - 2.0), 1e-15)
+    assert abs(derivative_jump(it, 2.0) - (s[2] - d[2])) < 1e-8
+    assert all(inc for inc, _, _, _ in shape_per_interval(it, x))
+
+
+def test_negative_rates_shift_the_curve_exactly():
+    base, shifted = curve(TIMES, SOFR), curve(TIMES, [v - 0.05 for v in SOFR])
+    for t in np.linspace(0.0, 5.5, 111):
+        assert_close(shifted.interpolate(t), base.interpolate(t) - 0.05, 1e-15)
+    assert_close(shifted.integrate(0.0, 4.0), base.integrate(0.0, 4.0) - 0.2, 1e-14)
+
+
+def test_decreasing_concave_data_give_decreasing_concave_pieces():
+    x = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
+    y = [0.036, 0.035, 0.032, 0.027, 0.020, 0.010]       # chord slopes fall from -0.001 to -0.010
+    for inc, dec, cvx, ccv in shape_per_interval(curve(x, y), x):
+        assert dec and ccv
+
+
+def test_duplicate_node_times_are_rejected():
+    try:
+        curve([0.0, 1.0, 1.0, 2.0], [0.01, 0.02, 0.02, 0.03])
+    except AssertionError:
+        return
+    raise AssertionError("duplicate node times should be rejected")
+
+
+def test_random_data_pieces_never_overshoot_and_integrate_consistently():
     rng = np.random.default_rng(7)
     for _ in range(50):
         n = int(rng.integers(3, 9))
@@ -257,7 +372,9 @@ def test_hand_calculation_of_a_three_node_curve():
     alpha2 = 2.0 * (abs(b2) - abs(a2)) / (abs(a2) + abs(b2))
     assert_close(it.breaks_[3], 1.0 + alpha2)
     L2 = 2.0 - alpha2
-    assert_close(it.interpolate(3.0), 1.0 + d1 * alpha2 + d1 * L2 + (d2 - d1) / (2.0 * L2) * L2 ** 2, 1e-14)
+    assert_close(it.interpolate(1.0 + alpha2 / 2.0), 1.0 + d1 * alpha2 / 2.0)                       # linear part
+    assert_close(it.interpolate(1.0 + alpha2 + L2 / 2.0), 1.0 + d1 * alpha2 + d1 * L2 / 2.0 + (d2 - d1) / (2.0 * L2) * (L2 / 2.0) ** 2)
+    assert_close(1.0 + d1 * alpha2 + d1 * L2 + (d2 - d1) / (2.0 * L2) * L2 ** 2, 2.0, 1e-14)          # the hand formula lands on f_2
     integral_2 = (1.0 * alpha2 + d1 * alpha2 ** 2 / 2.0 + (1.0 + d1 * alpha2) * L2 + d1 * L2 ** 2 / 2.0
                   + (d2 - d1) / (2.0 * L2) * L2 ** 3 / 3.0)
     assert_close(it.integrate(1.0, 3.0), integral_2)
@@ -302,12 +419,18 @@ def test_model_discount_factors_come_from_the_curve_integral():
 
 def test_bumping_a_node_rebuilds_the_curve_locally():
     model = notebook_model("MONOTONE_CONVEX")
-    before_far = qfDiscountFactor(model, "SOFR-1B", "2026-04-01")      # before the first node: flat at node 0
-    before_mid = qfDiscountFactor(model, "SOFR-1B", "2027-01-04")
+    before = model.retrieve_model_component("SOFR-1B").state_data_interpolator
+    far = np.linspace(TIMES[4], TIMES[5], 50)              # the last interval is two nodes away from the bump
+    near = np.linspace(TIMES[1], TIMES[3], 50)
+    far_values = [before.interpolate(t) for t in far]
+    near_values = [before.interpolate(t) for t in near]
+    df_before = qfDiscountFactor(model, "SOFR-1B", "2027-01-04")
     model.perturb_model_parameter("SOFR-1B", 2, 0.0001)                  # bump the 2027-07-02 node by 1 bp
-    assert qfDiscountFactor(model, "SOFR-1B", "2026-04-01") == before_far
-    assert qfDiscountFactor(model, "SOFR-1B", "2027-01-04") < before_mid
-    assert model.retrieve_model_component("SOFR-1B").state_data_interpolator.interpolate(TIMES[2]) == 0.0281
+    after = model.retrieve_model_component("SOFR-1B").state_data_interpolator
+    assert after is not before and after.interpolate(TIMES[2]) == 0.0281
+    assert max(abs(after.interpolate(t) - v) for t, v in zip(far, far_values)) < 1e-15
+    assert max(abs(after.interpolate(t) - v) for t, v in zip(near, near_values)) > 1e-5
+    assert qfDiscountFactor(model, "SOFR-1B", "2027-01-04") < df_before
 
 
 def value(model, product, label="FUNDING INDEX PARAMETER"):
@@ -347,8 +470,18 @@ def test_pv_differences_have_the_sign_the_curves_imply():
     mc_curve = curve(TIMES, SOFR)
     grid = np.linspace(TIMES[0] + 1e-9, TIMES[-1], 2001)
     assert all(mc_curve.interpolate(t) <= pcp_curve.interpolate(t) + 1e-15 for t in grid)
-    # lower forwards mean a smaller floating leg: both fixed receivers gain, and gain more with longer horizons
-    assert 3261.8437894226518 > 2908.2866392379638 and 12874.702872320777 - 6222.517513070154 > 353.55
+    # lower forwards mean a smaller floating leg, so both receivers of fixed gain
+    fra = qfCreateProductFRA(effective_date="2026-05-05", term_or_termination_date="2026-11-05",
+                             projection_index="SOFR-1B", fixed_rate=0.032, notional=1000000, pay_or_rec="receive",
+                             accrual_basis="ACT/360", business_day_convention="F", holiday_convention="USGS")
+    swap = qfCreateProductRFRSwap(effective_date="2026-04-02", term_or_termination_date="2029-04-02", on_index="SOFR-1B",
+                                  fixed_rate=0.034, notional=1000000, pay_or_rec="receive", accrual_period="1Y",
+                                  floating_leg_accrual_period="1Y", accrual_basis="ACT/360", compounding_method="compound",
+                                  spread=0.0, payment_off_set="2D", pay_business_day_convention="F",
+                                  pay_holiday_convention="USGS")
+    pcp, mc = notebook_model("PIECEWISE_CONSTANT_LEFT_CONTINUOUS"), notebook_model("MONOTONE_CONVEX")
+    assert value(mc, fra) > value(pcp, fra)
+    assert value(mc, swap) > value(pcp, swap)
 
 
 if __name__ == "__main__":

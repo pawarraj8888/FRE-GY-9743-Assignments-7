@@ -35,6 +35,10 @@ def pvs(model):
     leg2 = sum(N * act360(a, b) * comp(model, "FF-1B", a, b) * dfund(model, p) for a, b, p in LEG2)
     return fra, fixed, flt, fixed - flt, leg1, leg2, leg1 - leg2
 pp, pm = pvs(P), pvs(M)
+import subprocess  # noqa: E402
+n_tests, n_hand = (int([ln for ln in subprocess.run([sys.executable, f"tests/{name}.py"], capture_output=True, text=True, check=True)
+                        .stdout.splitlines() if ln.endswith("tests passed")][0].split()[0])
+                   for name in ("test_monotone_convex_interpolator", "test_hand_present_values"))
 
 grid = np.linspace(0.0, 5.5, 2201)
 fig, axes = plt.subplots(1, 2, figsize=(9.6, 3.4), sharey=True)
@@ -101,17 +105,20 @@ through the points, has a continuous derivative, and is monotone and convex on e
 <h2>The method in one paragraph</h2>
 <p>The inputs are IFR <i>values</i> at the nodes, so the free quantities are the node slopes. An interior node gets the weighted harmonic mean of the two neighbouring
 chord slopes (zero at a local extremum or next to a flat interval, never more than twice the smaller chord); the two end nodes get the slope of the parabola through the
-three outermost points, limited the same way. On each interval the derivative is piecewise linear through the left slope, a knot slope and the right slope, and the curve
-is two quadratics joined with a continuous derivative. When the end slopes straddle the chord the knot is placed where one piece becomes a straight line, so the derivative
-runs monotonically from one end slope to the other: the piece is convex (or concave for concave data) and, since every slope has the chord's sign, monotone. When both
-slopes sit on the same side of the chord no convex C<sup>1</sup> piece exists; the knot goes to the midpoint and the slope cap keeps the piece monotone. This is Hagan and
-West's recipe (local node estimates, piecewise quadratics, a flat segment inserted to protect monotonicity) moved from interval averages to point values.</p>
+three outermost points, limited the same way; and where two consecutive chords are equal (within a relative tolerance) the node between them and the two end nodes of that
+collinear run take the common chord, so collinear points are reproduced by their straight line. On each interval the derivative is piecewise linear through the left slope,
+a knot slope and the right slope, and the curve is two quadratics joined with a continuous derivative. When the end slopes straddle the chord (the data are strictly convex
+there) the knot is placed where one piece becomes a straight line, so the derivative runs monotonically from one end slope to the other: the piece is convex (or concave for
+concave data) and, since every slope has the chord's sign, monotone. When both slopes sit on the same side of the chord no convex C<sup>1</sup> piece exists; the knot moves
+toward the end whose slope is closer to the chord and the slope cap keeps the piece monotone. Where a collinear run meets data it cannot bend into smoothly (an extremum, a
+second run, a capped neighbour) the run stays straight and the curve takes a kink at that node. This is Hagan and West's recipe (local node estimates, piecewise quadratics,
+a flat segment inserted to protect monotonicity) moved from interval averages to point values.</p>
 <div class="formula">interior slope: d<sub>i</sub> = (w<sub>1</sub> + w<sub>2</sub>) / (w<sub>1</sub>/s<sub>i</sub> + w<sub>2</sub>/s<sub>i+1</sub>),
 &nbsp; w<sub>1</sub> = 2h<sub>i+1</sub> + h<sub>i</sub>, w<sub>2</sub> = h<sub>i+1</sub> + 2h<sub>i</sub>, &nbsp; |d<sub>i</sub>| &le; 2 min(|s<sub>i</sub>|, |s<sub>i+1</sub>|);
 &nbsp; knot slope m = 2s<sub>i</sub> &minus; (&alpha;d<sub>i&minus;1</sub> + &beta;d<sub>i</sub>)/h<sub>i</sub>.</div>
 {table(["Node date", "t (years)", "SOFR IFR", "FF IFR", "SOFR node slope"], node_rows)}
 {table(["Node interval (years)", "SOFR monotone", "SOFR convex", "FF monotone", "FF convex"], shape_rows)}
-<p class="note">The shape table evaluates the curve on a 2000-point grid inside each interval and checks the first and second differences.</p>
+<p class="note">The shape table evaluates the curve on a 2001-point grid inside each interval and checks the first and second differences.</p>
 
 <h2>Present values</h2>
 {table(["Product (notional 1,000,000)", "PCP PV", "Monotone convex PV", "Difference"], pv_rows)}
@@ -124,10 +131,12 @@ so the gap, and the PV, shrink.</p>
 {table(["Basis quarter start", "end", "SOFR minus FF (bp), PCP", "SOFR minus FF (bp), monotone convex"], gap_rows)}
 
 <h2>Checks</h2>
-<p class="note">22 tests in <code>tests/test_monotone_convex_interpolator.py</code>: one-node and two-node curves, interpolation through the points, continuity and a continuous
-derivative, the slope rules, shape on rising, falling, concave, hump and bowl data, the midpoint-knot case, random no-overshoot data, integrals against Simpson quadrature,
-flat extrapolation, a three-node hand calculation, model discount factors, bumping a node, and the six notebook PVs (the PCP values equal the professor's printed numbers).
-The build also re-derives the six PVs in plain Python from a second implementation of the recipe with hand-written schedules.</p>
+<p class="note">{n_tests} tests in <code>tests/test_monotone_convex_interpolator.py</code>: one-node and two-node curves, interpolation through the points, continuity and a continuous
+derivative, the slope rules and caps, shape on rising, falling, concave, hump and bowl data, the weighted-knot case, collinear runs (exact and tied only up to rounding, two runs
+meeting in a kink, a run ending at a maximum, a capped run end), continuity in the data around a tie, random no-overshoot data, integrals against Simpson quadrature, flat
+extrapolation, negative rates, a three-node hand calculation, model discount factors, the locality of a bump, and the six notebook PVs (the PCP values equal the professor's
+printed numbers). <code>tests/test_hand_present_values.py</code> ({n_hand} tests) re-derives the six PVs in plain Python from a second implementation of the recipe with
+hand-written schedules and checks them against the notebook and the library.</p>
 <p class="note">Source for this page: <code>docs/build_page.py</code> (the figure and every number above come from the library).</p>
 </body></html>
 """

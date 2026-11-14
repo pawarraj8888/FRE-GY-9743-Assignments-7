@@ -146,7 +146,12 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
        is a local extremum or next to a flat interval, and never more than
        twice the smaller neighbouring chord in magnitude.  End nodes take the
        slope of the parabola through the three outermost points, limited the
-       same way.  So a node slope always has the sign of the chords around it.
+       same way.  Where two consecutive chords are equal (a collinear run, tested
+       with a relative tolerance so a tie broken only by rounding still counts)
+       the node between them and the two end nodes of the run take the common
+       chord as slope, under the same sign rule and cap, so the run is
+       reproduced by its straight line.  So a node slope always has the sign of
+       the chords around it and is at most twice the smaller of them.
     2. Interval pieces.  On each interval the derivative is piecewise linear
        through (left slope, knot slope, right slope).  When the two end slopes
        straddle the chord slope the knot is placed so that one piece is linear
@@ -154,10 +159,18 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
        derivative runs monotonically from one end slope to the other: the
        piece is monotone and convex (slopes below-then-above the chord) or
        monotone and concave (above-then-below).  When both end slopes sit on
-       the same side of the chord no C1 convex piece exists; the knot goes to
-       the midpoint and the slope cap keeps the piece monotone.
+       the same side of the chord no C1 convex piece exists; the knot sits at
+       the fraction |b|/(|a|+|b|) of the interval (a, b the end slopes measured
+       from the chord) and the slope cap keeps the piece monotone.  When exactly
+       one end slope lies on the chord, which only happens where a collinear run
+       meets data it cannot bend into smoothly, the interval is the chord itself
+       and the curve has a kink at the other node.
     3. Extrapolation is flat on both sides; one node gives a constant curve.
+    So the curve is C1 except at those kinks, monotone on every interval, and
+    convex on every interval whose chords increase strictly across it.
     """
+
+    TIE_TOLERANCE = 1e-10      # relative: chords (and end slopes against the chord) this close count as equal
 
     def __init__(self, axis1: np.ndarray, values: np.ndarray,
                  extrapolation_method: ExtrapMethod) -> None:
@@ -171,6 +184,7 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
             self.coefs_ = np.zeros((1, 3))
             self.coefs_[0, 0] = y[0]
         else:
+            assert np.all(np.diff(x) > 0.0), "MONOTONE_CONVEX needs strictly increasing axis1"
             self.breaks_, self.coefs_ = self._build_pieces(x, y, self._node_slopes(x, y))
         lengths = np.diff(self.breaks_)
         piece_areas = (self.coefs_[:, 0] * lengths + self.coefs_[:, 1] * lengths ** 2 / 2.0
@@ -178,8 +192,8 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
         self.cumulative_ = np.concatenate(([0.0], np.cumsum(piece_areas)))
 
     # -- construction ---------------------------------------------------------------------------
-    @staticmethod
-    def _node_slopes(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    @classmethod
+    def _node_slopes(cls, x: np.ndarray, y: np.ndarray) -> np.ndarray:
         h = np.diff(x)
         s = np.diff(y) / h
         n = len(h)
@@ -192,16 +206,26 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
                 continue
             w1 = 2.0 * h[i] + h[i - 1]
             w2 = h[i] + 2.0 * h[i - 1]
-            d[i] = Interpolator1DMonotoneConvex._limit(
-                (w1 + w2) / (w1 / s[i - 1] + w2 / s[i]), s[i - 1], s[i])
-        d[0] = Interpolator1DMonotoneConvex._end_slope(h[0], h[1], s[0], s[1])
-        d[n] = Interpolator1DMonotoneConvex._end_slope(h[n - 1], h[n - 2], s[n - 1], s[n - 2])
+            d[i] = cls._limit((w1 + w2) / (w1 / s[i - 1] + w2 / s[i]), s[i - 1], s[i])
+        d[0] = cls._end_slope(h[0], h[1], s[0], s[1])
+        d[n] = cls._end_slope(h[n - 1], h[n - 2], s[n - 1], s[n - 2])
+        # Collinear runs: the node inside a tie and the two end nodes of the run take the run's
+        # chord.  A node asked for two different chords (two runs meeting) keeps its default slope.
+        proposals = {}
+        for i in range(n - 1):
+            if abs(s[i] - s[i + 1]) <= cls.TIE_TOLERANCE * max(abs(s[i]), abs(s[i + 1])):
+                for node in (i, i + 1, i + 2):
+                    proposals.setdefault(node, []).append(s[i])
+        for node, chords in proposals.items():
+            if max(chords) - min(chords) <= cls.TIE_TOLERANCE * max(abs(chords[0]), 1e-300):
+                left, right = s[max(node - 1, 0)], s[min(node, n - 1)]
+                d[node] = cls._limit(chords[0], left, right)
         return d
 
-    @staticmethod
-    def _end_slope(h_end: float, h_next: float, s_end: float, s_next: float) -> float:
+    @classmethod
+    def _end_slope(cls, h_end: float, h_next: float, s_end: float, s_next: float) -> float:
         parabola = ((2.0 * h_end + h_next) * s_end - h_end * s_next) / (h_end + h_next)
-        return Interpolator1DMonotoneConvex._limit(parabola, s_end, s_end)
+        return cls._limit(parabola, s_end, s_end)
 
     @staticmethod
     def _limit(slope: float, s_left: float, s_right: float) -> float:
@@ -210,37 +234,44 @@ class Interpolator1DMonotoneConvex(Interpolator1D):
             return 0.0
         return float(np.sign(slope) * min(abs(slope), 2.0 * min(abs(s_left), abs(s_right))))
 
-    @staticmethod
-    def _interval_segments(h: float, s: float, d0: float, d1: float):
+    @classmethod
+    def _interval_segments(cls, h: float, s: float, d0: float, d1: float):
         """(length, left slope, right slope) of the one or two pieces covering an interval."""
         a, b = s - d0, d1 - s                       # end slopes relative to the chord
+        scale = cls.TIE_TOLERANCE * (abs(s) + abs(d0) + abs(d1))
+        a = 0.0 if abs(a) <= scale else a
+        b = 0.0 if abs(b) <= scale else b
         if a == 0.0 and b == 0.0:
             return [(h, d0, d1)]
+        if a == 0.0 or b == 0.0:                    # one end slope on the chord: the chord itself, with a
+            return [(h, s, s)]                      # kink at the other node (no convex C1 piece exists)
         if a * b > 0.0:                             # slopes straddle the chord: one linear piece
-            if abs(a) == abs(b):
+            if abs(abs(a) - abs(b)) <= scale:
                 return [(h, d0, d1)]
             if abs(b) < abs(a):
                 alpha = 2.0 * h * abs(b) / (abs(a) + abs(b))
                 return [(alpha, d0, d1), (h - alpha, d1, d1)]
             alpha = h * (abs(b) - abs(a)) / (abs(a) + abs(b))
             return [(alpha, d0, d0), (h - alpha, d0, d1)]
-        knot_slope = 2.0 * s - 0.5 * (d0 + d1)      # same side of the chord: midpoint knot
-        return [(0.5 * h, d0, knot_slope), (0.5 * h, knot_slope, d1)]
+        weight = abs(b) / (abs(a) + abs(b))         # same side of the chord: knot nearer the end whose
+        knot_slope = 2.0 * s - weight * d0 - (1.0 - weight) * d1   # slope is closer to the chord
+        return [(weight * h, d0, knot_slope), ((1.0 - weight) * h, knot_slope, d1)]
 
-    @staticmethod
-    def _build_pieces(x: np.ndarray, y: np.ndarray, d: np.ndarray):
+    @classmethod
+    def _build_pieces(cls, x: np.ndarray, y: np.ndarray, d: np.ndarray):
         breaks, coefs = [x[0]], []
         for i in range(len(x) - 1):
             h = x[i + 1] - x[i]
             level, start = y[i], x[i]
-            for length, left, right in Interpolator1DMonotoneConvex._interval_segments(
-                    h, (y[i + 1] - y[i]) / h, d[i], d[i + 1]):
+            segments = cls._interval_segments(h, (y[i + 1] - y[i]) / h, d[i], d[i + 1])
+            for k, (length, left, right) in enumerate(segments):
+                end = x[i + 1] if k == len(segments) - 1 else start + length   # land exactly on the node
+                length = end - start
                 c2 = 0.0 if length == 0.0 else (right - left) / (2.0 * length)
                 coefs.append([level, left, c2])
                 level = level + length * (left + c2 * length)
-                start = start + length
-                breaks.append(start)
-            breaks[-1] = x[i + 1]                   # land exactly on the node
+                start = end
+                breaks.append(end)
         return np.array(breaks), np.array(coefs)
 
     # -- evaluation -----------------------------------------------------------------------------
